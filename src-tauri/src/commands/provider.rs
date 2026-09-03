@@ -603,9 +603,24 @@ async fn query_provider_usage_inner(
             resolve_coding_plan_credentials(&app_type, provider, usage_script);
 
         // 火山方舟用账号 AK/SK 签名查询用量（存于 usage_script，与推理 api_key 分离）；
-        // 其他供应商为 None，service 层沿用 api_key。
-        let access_key_id = usage_script.and_then(|s| s.access_key_id.clone());
-        let secret_access_key = usage_script.and_then(|s| s.secret_access_key.clone());
+        // 其他供应商为 None，service 层沿用 api_key。Agent Plan / Coding Plan 是同一
+        // 账号的两个条目：当前条目未配置完整 AK/SK 时，自动复用其他条目已配置的凭据。
+        let is_volcengine = {
+            let base_lc = base_url.to_lowercase();
+            base_lc.contains("volces.com/api/plan") || base_lc.contains("volces.com/api/coding")
+        };
+        let (access_key_id, secret_access_key) = if is_volcengine {
+            crate::services::coding_plan::resolve_volcengine_aksk_with_fallback(
+                state,
+                usage_script.and_then(|s| s.access_key_id.as_deref()),
+                usage_script.and_then(|s| s.secret_access_key.as_deref()),
+            )
+        } else {
+            (
+                usage_script.and_then(|s| s.access_key_id.clone()),
+                usage_script.and_then(|s| s.secret_access_key.clone()),
+            )
+        };
         // 智谱团队版：显式 provider 标识 + 组织/项目 ID（与个人版智谱 base_url 相同，
         // 靠 coding_plan_provider == "zhipu_team" 在 service 层路由）。
         let coding_plan_provider = usage_script.and_then(|s| s.coding_plan_provider.clone());

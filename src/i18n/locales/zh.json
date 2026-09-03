@@ -1909,6 +1909,7 @@
     "secretAccessKey": "SecretAccessKey",
     "volcengineAkSkHint": "火山用量查询需账号级 AccessKey ID / Secret（与推理 API Key 不同）。请在火山引擎控制台右上角账号菜单 →「API访问密钥」中创建。",
     "volcengineKeyConsoleLink": "密钥创建地址：",
+    "volcengineAkSkReuseHint": "💡 任一火山方舟条目配置 AccessKey ID / Secret 后，其余条目自动复用，无需重复填写；不同账号的条目请分别配置。",
     "zhipuTeamHint": "智谱团队套餐用量查询需团队 API Key（沿用本供应商凭据）+ 组织 ID + 项目 ID（作为请求头 bigmodel-organization / bigmodel-project）。组织与项目 ID 可在团队管理后台用量页的 URL 中找到。",
     "zhipuTeamConsoleLink": "团队用量页：",
     "organizationId": "组织 ID",

@@ -1330,6 +1330,73 @@ async fn query_volcengine(
     }
 }
 
+// ── 火山方舟 AK/SK 自动复用 ─────────────────
+//
+// Agent Plan 与 Coding Plan 是同一账号的两个条目，AK/SK 相同。
+// UsageScript 的 access_key_id / secret_access_key 仅用于火山控制面签名
+// （其他供应商不使用这两个字段），因此查询时任一条目未配置完整 AK/SK 时，
+// 跨应用收集所有条目中齐全的凭据对：去重后恰好一组 → 自动复用；
+// 0 组（都没配）或 ≥2 组（多账号，凭据不同）→ 不猜测，
+// 维持原有"需要显式配置"的错误路径。不落盘、不回写，
+// 条目增删改后天然保持同步。
+pub(crate) fn resolve_volcengine_aksk_with_fallback(
+    state: &crate::store::AppState,
+    current_ak: Option<&str>,
+    current_sk: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    // 当前条目已配置完整 AK/SK → 直接使用
+    let own_ak = current_ak.map(str::trim).filter(|s| !s.is_empty());
+    let own_sk = current_sk.map(str::trim).filter(|s| !s.is_empty());
+    if let (Some(ak), Some(sk)) = (own_ak, own_sk) {
+        return (Some(ak.to_string()), Some(sk.to_string()));
+    }
+
+    // 跨应用收集所有 usage_script 中 AK/SK 齐全的凭据对
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for app in crate::app_config::AppType::all() {
+        let Ok(providers) = state.db.get_all_providers(app.as_str()) else {
+            continue;
+        };
+        for provider in providers.values() {
+            let Some(script) = provider.meta.as_ref().and_then(|m| m.usage_script.as_ref()) else {
+                continue;
+            };
+            let Some(ak) = script
+                .access_key_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let Some(sk) = script
+                .secret_access_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            pairs.push((ak.to_string(), sk.to_string()));
+        }
+    }
+    match unique_aksk_pair(pairs) {
+        Some((ak, sk)) => (Some(ak), Some(sk)),
+        None => (None, None),
+    }
+}
+
+/// 去重后恰好一组凭据 → 复用；0 组或 ≥2 组（多账号）→ 不猜测。
+fn unique_aksk_pair(mut pairs: Vec<(String, String)>) -> Option<(String, String)> {
+    pairs.sort();
+    pairs.dedup();
+    if pairs.len() == 1 {
+        pairs.pop()
+    } else {
+        None
+    }
+}
+
 // ── 公开入口 ────────────────────────────────────────────────
 
 /// 构造"凭据缺失 / 域名未命中"的失败结果（NotFound 状态 + 明确错误文案）。
@@ -1500,12 +1567,41 @@ pub async fn get_coding_plan_quota(
 mod tests {
     use super::{
         detect_provider, parse_afp_tiers, parse_coding_plan_tiers, parse_minimax_tiers,
-        parse_opencode_go_tiers, parse_zhipu_token_tiers, query_zhipu_team_at,
+        parse_opencode_go_tiers, parse_zhipu_token_tiers, query_zhipu_team_at, unique_aksk_pair,
         volcengine_canonical_query, volcengine_is_auth_error_code, volcengine_region,
         volcengine_response_error, volcengine_sign, zhipu_quota_base, CodingPlanProvider,
         TIER_FIVE_HOUR, TIER_MONTHLY, TIER_WEEKLY_LIMIT,
     };
     use serde_json::json;
+
+    #[test]
+    fn unique_aksk_pair_reuses_single_configured_entry() {
+        let pair = unique_aksk_pair(vec![("ak-1".into(), "sk-1".into())]);
+        assert_eq!(pair, Some(("ak-1".to_string(), "sk-1".to_string())));
+    }
+
+    #[test]
+    fn unique_aksk_pair_dedups_identical_entries() {
+        let pair = unique_aksk_pair(vec![
+            ("ak-1".into(), "sk-1".into()),
+            ("ak-1".into(), "sk-1".into()),
+        ]);
+        assert_eq!(pair, Some(("ak-1".to_string(), "sk-1".to_string())));
+    }
+
+    #[test]
+    fn unique_aksk_pair_ignores_ambiguous_multiple_accounts() {
+        let pair = unique_aksk_pair(vec![
+            ("ak-1".into(), "sk-1".into()),
+            ("ak-2".into(), "sk-2".into()),
+        ]);
+        assert!(pair.is_none());
+    }
+
+    #[test]
+    fn unique_aksk_pair_empty_when_none_configured() {
+        assert!(unique_aksk_pair(vec![]).is_none());
+    }
 
     #[test]
     fn opencode_go_detects_both_base_variants_but_not_zen() {

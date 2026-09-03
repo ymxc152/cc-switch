@@ -1411,6 +1411,9 @@ const UsageScriptModal: React.FC<UsageScriptModalProps> = ({
                       </div>
                     </div>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    {t("usageScript.volcengineAkSkReuseHint")}
+                  </p>
                 </div>
               )}
 

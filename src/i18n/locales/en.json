@@ -1909,6 +1909,7 @@
     "secretAccessKey": "SecretAccessKey",
     "volcengineAkSkHint": "Volcengine usage query needs an account-level AccessKey ID / Secret (different from the inference API key). Create them in the Volcengine console via the top-right account menu → 'API Access Keys'.",
     "volcengineKeyConsoleLink": "Create keys at:",
+    "volcengineAkSkReuseHint": "💡 Once configured on any Volcengine entry, the AccessKey ID / Secret is automatically reused by the others; configure entries belonging to different accounts separately.",
     "zhipuTeamHint": "Zhipu team plan usage query needs the team API key (reuses this provider's credentials) + organization ID + project ID (sent as bigmodel-organization / bigmodel-project request headers). Find the organization and project IDs in the team admin console's usage page URL.",
     "zhipuTeamConsoleLink": "Team usage page:",
     "organizationId": "Organization ID",
