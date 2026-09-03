@@ -48,8 +48,8 @@ fn detect_provider(base_url: &str) -> Option<CodingPlanProvider> {
     } else if url.contains("volces.com/api/plan") || url.contains("volces.com/api/coding") {
         // 仅匹配 Agent Plan（/api/plan[/v3]）与 Coding Plan（/api/coding[/v3]）
         // 入口；DouBaoSeed 按量付费走 /api/v3 与 /api/compatible，没有套餐
-        // 额度，不在此命中。用量探测本身是双 plan 自动探测（GetAFPUsage →
-        // GetCodingPlanUsage），无需在此区分两种订阅。
+        // 额度，不在此命中。用量探测按 base_url 分流（见 query_volcengine）：
+        // `/api/plan` 只查 GetAFPUsage，`/api/coding` 只查 GetCodingPlanUsage。
         Some(CodingPlanProvider::Volcengine)
     } else {
         None
@@ -1242,46 +1242,66 @@ async fn query_volcengine(
         format!("{action}={raw}")
     };
 
-    // 1) Agent Plan：GetAFPUsage
-    match volcengine_openapi_call(&region, access_key_id, secret_access_key, "GetAFPUsage").await {
-        VolcCall::Auth(detail) => return Ok(volcengine_auth_error(detail)),
-        VolcCall::Transient(detail) => return Err(format!("GetAFPUsage: {detail}")),
-        VolcCall::Soft(detail) => soft_errors.push(format!("GetAFPUsage: {detail}")),
-        VolcCall::Body(body) => {
-            let result = body.get("Result").unwrap_or(&body);
-            let tiers = parse_afp_tiers(result);
-            if !tiers.is_empty() {
-                let plan = result
-                    .get("PlanType")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(|s| format!("Agent Plan {s}"));
-                return Ok(volcengine_success(tiers, plan));
+    // 按 base_url 分流：数据面入口不同 → 对应套餐不同，两个供应商条目各查各的。
+    // - `/api/plan[/v3]`（Agent Plan 条目）只查 GetAFPUsage；
+    // - `/api/coding[/v3]`（Coding Plan 条目）只查 GetCodingPlanUsage；
+    // - 无法识别（自定义反代等）保持原有双探测兜底。
+    // 两个 plan 共用同一份 AK/SK，故鉴权类错误任一步命中即停。
+    let url_lc = base_url.to_lowercase();
+    let (probe_agent, probe_coding) = if url_lc.contains("volces.com/api/coding") {
+        (false, true)
+    } else if url_lc.contains("volces.com/api/plan") {
+        (true, false)
+    } else {
+        (true, true)
+    };
+
+    if probe_agent {
+        // 1) Agent Plan：GetAFPUsage
+        match volcengine_openapi_call(&region, access_key_id, secret_access_key, "GetAFPUsage")
+            .await
+        {
+            VolcCall::Auth(detail) => return Ok(volcengine_auth_error(detail)),
+            VolcCall::Transient(detail) => return Err(format!("GetAFPUsage: {detail}")),
+            VolcCall::Soft(detail) => soft_errors.push(format!("GetAFPUsage: {detail}")),
+            VolcCall::Body(body) => {
+                let result = body.get("Result").unwrap_or(&body);
+                let tiers = parse_afp_tiers(result);
+                if !tiers.is_empty() {
+                    let plan = result
+                        .get("PlanType")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| format!("Agent Plan {s}"));
+                    return Ok(volcengine_success(tiers, plan));
+                }
+                empty_responses.push(summarize("GetAFPUsage", &body));
             }
-            empty_responses.push(summarize("GetAFPUsage", &body));
         }
     }
 
-    // 2) Coding Plan：GetCodingPlanUsage
-    match volcengine_openapi_call(
-        &region,
-        access_key_id,
-        secret_access_key,
-        "GetCodingPlanUsage",
-    )
-    .await
-    {
-        VolcCall::Auth(detail) => return Ok(volcengine_auth_error(detail)),
-        VolcCall::Transient(detail) => return Err(format!("GetCodingPlanUsage: {detail}")),
-        VolcCall::Soft(detail) => soft_errors.push(format!("GetCodingPlanUsage: {detail}")),
-        VolcCall::Body(body) => {
-            let result = body.get("Result").unwrap_or(&body);
-            let tiers = parse_coding_plan_tiers(result);
-            if !tiers.is_empty() {
-                return Ok(volcengine_success(tiers, Some("Coding Plan".to_string())));
+    if probe_coding {
+        // 2) Coding Plan：GetCodingPlanUsage
+        match volcengine_openapi_call(
+            &region,
+            access_key_id,
+            secret_access_key,
+            "GetCodingPlanUsage",
+        )
+        .await
+        {
+            VolcCall::Auth(detail) => return Ok(volcengine_auth_error(detail)),
+            VolcCall::Transient(detail) => return Err(format!("GetCodingPlanUsage: {detail}")),
+            VolcCall::Soft(detail) => soft_errors.push(format!("GetCodingPlanUsage: {detail}")),
+            VolcCall::Body(body) => {
+                let result = body.get("Result").unwrap_or(&body);
+                let tiers = parse_coding_plan_tiers(result);
+                if !tiers.is_empty() {
+                    return Ok(volcengine_success(tiers, Some("Coding Plan".to_string())));
+                }
+                empty_responses.push(summarize("GetCodingPlanUsage", &body));
             }
-            empty_responses.push(summarize("GetCodingPlanUsage", &body));
         }
     }
 
@@ -1294,6 +1314,14 @@ async fn query_volcengine(
             "No active subscription found (signature OK). Raw: {}",
             empty_responses.join(" || ")
         )))
+    } else if !probe_agent {
+        Ok(make_error(
+            "No active Coding Plan subscription found for this credential".to_string(),
+        ))
+    } else if !probe_coding {
+        Ok(make_error(
+            "No active Agent Plan subscription found for this credential".to_string(),
+        ))
     } else {
         Ok(make_error(
             "No active Agent Plan or Coding Plan subscription found for this credential"
