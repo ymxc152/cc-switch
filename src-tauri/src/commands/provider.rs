@@ -610,11 +610,23 @@ async fn query_provider_usage_inner(
             base_lc.contains("volces.com/api/plan") || base_lc.contains("volces.com/api/coding")
         };
         let (access_key_id, secret_access_key) = if is_volcengine {
-            crate::services::coding_plan::resolve_volcengine_aksk_with_fallback(
-                state,
+            match crate::services::coding_plan::resolve_volcengine_aksk(
+                &state.db,
+                usage_script.and_then(|s| s.aksk_account_id.as_deref()),
                 usage_script.and_then(|s| s.access_key_id.as_deref()),
                 usage_script.and_then(|s| s.secret_access_key.as_deref()),
-            )
+                provider.and_then(|p| Some(p.name.as_str())),
+            ) {
+                Ok(cred) => (Some(cred.ak), Some(cred.sk)),
+                // 确定性失败（未配置/账号池空）：写失败快照并在卡片上展示引导
+                Err(msg) => {
+                    return Ok(crate::provider::UsageResult {
+                        success: false,
+                        data: None,
+                        error: Some(msg),
+                    });
+                }
+            }
         } else {
             (
                 usage_script.and_then(|s| s.access_key_id.clone()),
@@ -1204,6 +1216,7 @@ mod native_query_credentials_tests {
             secret_access_key: None,
             team_organization_id: None,
             team_project_id: None,
+            aksk_account_id: None,
         }
     }
 
